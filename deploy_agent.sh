@@ -101,6 +101,37 @@ confirm() {
     esac
 }
 
+# Run one filesystem step of the deployment and explain it if it fails.
+# mkdir, cp and chmod all print their own reason on stderr (most often
+# "Permission denied"); this adds which step was being attempted, so a denied
+# write is reported clearly instead of silently producing a broken project.
+step() {
+    local what="$1"
+    shift
+    if "$@"; then
+        return 0
+    fi
+    echo
+    err "Could not $what."
+    err "Check that you own $SCRIPT_DIR and have write permission there."
+    return 1
+}
+
+# Roll back a deployment that failed partway through. Same rule as the
+# interrupt handler: never leave a half-made project behind.
+abort_partial_deploy() {
+    local project="$1"
+    if [ -d "$project" ]; then
+        if rm -rf "$project" 2>/dev/null; then
+            info "Removed the incomplete $project/."
+        else
+            warn "Could not remove $project/ - please delete it by hand."
+        fi
+    fi
+    disarm_interrupt_trap
+    err "Deployment aborted. Nothing was left half-built."
+}
+
 # ------------------------------------------------------------------
 # Signal handling (active only while a project is being built)
 # ------------------------------------------------------------------
@@ -228,15 +259,29 @@ preflight_checks() {
     fi
 
     # Templates are part of the repo; without them there is nothing to deploy.
+    # Readability is checked too, not just existence - a template the agent
+    # cannot read is as fatal as one that is absent.
     local template
     for template in attendance_checker.py assets.csv config.json; do
-        if [ -f "$TEMPLATE_DIR/$template" ]; then
-            ok "template found - templates/$template"
-        else
+        if [ ! -f "$TEMPLATE_DIR/$template" ]; then
             err "Missing template: $TEMPLATE_DIR/$template"
             missing=1
+        elif [ ! -r "$TEMPLATE_DIR/$template" ]; then
+            err "Cannot read template (permission denied): templates/$template"
+            missing=1
+        else
+            ok "template found - templates/$template"
         fi
     done
+
+    # Projects are created here, so a read-only working directory would fail
+    # every mkdir that follows. Better to say so now than halfway through.
+    if [ -w "$SCRIPT_DIR" ]; then
+        ok "write permission confirmed - $SCRIPT_DIR"
+    else
+        err "No write permission in $SCRIPT_DIR - cannot create a project there."
+        missing=1
+    fi
 
     if [ "$missing" -ne 0 ]; then
         err "Pre-flight failed. Fix the above and try again."
@@ -287,7 +332,11 @@ build_roster() {
                 done
 
                 # head -n count+1 keeps the header row plus `count` students.
-                head -n "$(( count + 1 ))" "$TEMPLATE_DIR/assets.csv" > "$roster"
+                # A failed redirection here means the roster is unwritable.
+                if ! head -n "$(( count + 1 ))" "$TEMPLATE_DIR/assets.csv" > "$roster"; then
+                    err "Could not write the roster to $roster."
+                    return 1
+                fi
                 ROSTER_SESSIONS=5
                 ok "Copied $count students from the template roster."
                 break ;;
@@ -307,7 +356,10 @@ build_roster() {
                 done
 
                 # Header first, then one row per student with zeroed counts.
-                printf 'Email,Names,Attendance Count,Absence Count\n' > "$roster"
+                if ! printf 'Email,Names,Attendance Count,Absence Count\n' > "$roster"; then
+                    err "Could not write the roster to $roster."
+                    return 1
+                fi
                 local i=0
                 while [ "$i" -lt "$count" ]; do
                     printf '%s,%s,0,0\n' \
@@ -409,16 +461,23 @@ deploy_project() {
 
     # Structure the Python app expects: the script at the project root, its
     # inputs under Helpers/, and an empty reports/ it will fill on first run.
-    mkdir -p "$project/Helpers" "$project/reports"
+    step "create the project directories" \
+        mkdir -p "$project/Helpers" "$project/reports" \
+        || { abort_partial_deploy "$project"; return 1; }
     ok "Created $project/, $project/Helpers/, $project/reports/"
 
     # attendance_checker.py and config.json always deploy unmodified.
-    cp "$TEMPLATE_DIR/attendance_checker.py" "$project/attendance_checker.py"
-    cp "$TEMPLATE_DIR/config.json" "$project/Helpers/config.json"
+    step "copy attendance_checker.py into $project/" \
+        cp "$TEMPLATE_DIR/attendance_checker.py" "$project/attendance_checker.py" \
+        || { abort_partial_deploy "$project"; return 1; }
+    step "copy config.json into $project/Helpers/" \
+        cp "$TEMPLATE_DIR/config.json" "$project/Helpers/config.json" \
+        || { abort_partial_deploy "$project"; return 1; }
     ok "Deployed attendance_checker.py and Helpers/config.json"
 
     # The roster is the one file the operator gets to shape.
-    build_roster "$project/Helpers/assets.csv" || return 1
+    build_roster "$project/Helpers/assets.csv" \
+        || { abort_partial_deploy "$project"; return 1; }
 
     # Keep the config honest about how many sessions the roster has seen.
     patch_json_number total_sessions "$ROSTER_SESSIONS" "$project/Helpers/config.json"
@@ -428,10 +487,15 @@ deploy_project() {
     echo
     info "Applying permissions..."
     # The app is launched directly, so it needs the execute bit.
-    chmod +x "$project/attendance_checker.py"
+    step "make attendance_checker.py executable" \
+        chmod +x "$project/attendance_checker.py" \
+        || { abort_partial_deploy "$project"; return 1; }
     # config.json holds the pass/fail thresholds. Owner read/write only keeps
     # other accounts on this machine from reading or editing grading rules.
-    chmod 600 "$project/Helpers/config.json"
+    # A config left world-readable is a security failure, so this aborts too.
+    step "restrict Helpers/config.json to owner read/write" \
+        chmod 600 "$project/Helpers/config.json" \
+        || { abort_partial_deploy "$project"; return 1; }
     ok "chmod +x  attendance_checker.py   -> $(ls -l "$project/attendance_checker.py" | cut -d' ' -f1)"
     ok "chmod 600 Helpers/config.json     -> $(ls -l "$project/Helpers/config.json" | cut -d' ' -f1)"
 

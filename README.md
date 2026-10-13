@@ -60,9 +60,11 @@ directory you invoke it from.
 
 ## Feature 1 — Deploy
 
-1. **Pre-flight checks.** Confirms `python3` and `zip` are installed and that
-   all three templates are present. If anything is missing the agent reports it
-   and stops *before* creating any directory.
+1. **Pre-flight checks.** Confirms `python3` and `zip` are installed (reporting
+   the version `python3 --version` gives back), that all three templates are
+   present *and readable*, and that the working directory is writable. If
+   anything is missing the agent reports it and stops *before* creating any
+   directory.
 2. **Names the project.** Prompts for a suffix and builds
    `attendance_tracker_{suffix}/`. The suffix is restricted to letters, digits,
    hyphens and underscores so it cannot break the path.
@@ -83,6 +85,13 @@ directory you invoke it from.
    deployed unmodified from `templates/`. The roster is built from your choice
    of the two options below.
 5. **Sets permissions** and prints what it applied.
+   Every filesystem step — `mkdir`, both `cp`s, the roster write and both
+   `chmod`s — is checked. If one fails (a denied write being the usual cause)
+   the agent names the step that failed, shows the reason the command gave,
+   removes the partial directory and aborts, rather than carrying on and
+   producing a project that looks deployed but is broken. A `chmod 600` that
+   fails is treated as fatal too: a config left world-readable is a security
+   failure, not a cosmetic one.
 6. **Offers to update the alert thresholds.**
 7. **Verifies the deployment** by running the application (Feature 2). A
    successful start proves the structure, roster and config all agree.
@@ -270,6 +279,8 @@ Each of these was run against a real deployment:
 | Archive, `absent.log` absent | Archived the one existing log, reported the missing one, exited 0 |
 | Archive run twice | Two distinct timestamped files, nothing overwritten |
 | Existing project directory | Declining the overwrite aborted with an error and left the roster untouched |
+| Read-only working directory | Pre-flight refused with "No write permission in ..." and created nothing |
+| Write denied mid-deploy | Named the failing step, showed the command's own reason, removed the partial directory, aborted |
 | Run / archive on a missing project | Clear "No such project" error, no crash |
 | Ctrl+C mid-deploy | Exit 130, zip written, partial directory removed |
 | Ctrl+Z mid-deploy | Exit 148, zip written, partial directory removed |
