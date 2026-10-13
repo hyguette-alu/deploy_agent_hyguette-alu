@@ -54,6 +54,11 @@ SAMPLE_EMAILS=(
 # Empty means "nothing half-built right now".
 PROJECT_IN_PROGRESS=""
 
+# Filled in by the interactive prompts. See read_project_name for why these
+# are globals rather than values echoed back through command substitution.
+PROJECT_NAME=""
+ROSTER_SESSIONS=""
+
 # ------------------------------------------------------------------
 # Small output helpers - one place to change the look of every message
 # ------------------------------------------------------------------
@@ -157,10 +162,17 @@ disarm_interrupt_trap() {
 # Shared prompts
 # ------------------------------------------------------------------
 
-# Read a project suffix and echo the full directory name on stdout.
-# Status messages go to stderr so they do not pollute the captured value.
+# Read a project suffix and store the full directory name in PROJECT_NAME.
+#
+# These prompts deliberately set a global instead of echoing a value for the
+# caller to capture with $(...). Command substitution runs in a subshell, and
+# bash defers the parent's traps until a subshell finishes - so a Ctrl+C
+# arriving while the operator sits at one of these prompts would be swallowed
+# instead of triggering the archive. Keeping the reads in the main shell keeps
+# the interrupt handler responsive at every prompt of the deployment.
 read_project_name() {
     local input
+    PROJECT_NAME=""
     while true; do
         read -r -p "  Project name suffix (attendance_tracker_<name>): " input
         if [ -z "$input" ]; then
@@ -175,20 +187,19 @@ read_project_name() {
         esac
         break
     done
-    printf 'attendance_tracker_%s\n' "$input"
+    PROJECT_NAME="attendance_tracker_$input"
 }
 
 # Ask for an existing deployment (features 2 and 3) and validate it.
+# Also leaves the answer in PROJECT_NAME.
 read_existing_project() {
-    local project
-    project="$(read_project_name)" || return 1
+    read_project_name || return 1
 
-    if [ ! -d "$project" ]; then
-        err "No such project: $SCRIPT_DIR/$project"
+    if [ ! -d "$PROJECT_NAME" ]; then
+        err "No such project: $SCRIPT_DIR/$PROJECT_NAME"
         err "Deploy it first with feature 1."
         return 1
     fi
-    printf '%s\n' "$project"
 }
 
 # ------------------------------------------------------------------
@@ -234,7 +245,8 @@ preflight_checks() {
     ok "All pre-flight checks passed."
 }
 
-# Build Helpers/assets.csv and echo the matching total_sessions on stdout.
+# Build Helpers/assets.csv and store the matching total_sessions in
+# ROSTER_SESSIONS.
 #
 # The two options differ in what the roster already contains, and
 # total_sessions has to agree with it: the app expects every student to have
@@ -243,13 +255,15 @@ preflight_checks() {
 #   Option B - fresh rows start at 0/0, so today is session one -> 1
 build_roster() {
     local roster="$1"
-    local choice count sessions
+    local choice count
 
-    echo >&2
-    info "How should the class roster be built?" >&2
-    info "  A) Copy students from templates/assets.csv (they keep their" >&2
-    info "     existing attendance history - 4 prior sessions each)" >&2
-    info "  B) Generate a fresh roster (all counts start at 0)" >&2
+    ROSTER_SESSIONS=""
+
+    echo
+    info "How should the class roster be built?"
+    info "  A) Copy students from templates/assets.csv (they keep their"
+    info "     existing attendance history - 4 prior sessions each)"
+    info "  B) Generate a fresh roster (all counts start at 0)"
 
     while true; do
         read -r -p "  Choose A or B: " choice
@@ -259,7 +273,7 @@ build_roster() {
                 # Count data rows, ignoring the header and any blank lines, so
                 # the agent never asks for more students than exist.
                 available=$(( $(grep -c '[^[:space:]]' "$TEMPLATE_DIR/assets.csv") - 1 ))
-                info "The template has $available students." >&2
+                info "The template has $available students."
 
                 while true; do
                     read -r -p "  How many to copy (1-$available): " count
@@ -274,12 +288,12 @@ build_roster() {
 
                 # head -n count+1 keeps the header row plus `count` students.
                 head -n "$(( count + 1 ))" "$TEMPLATE_DIR/assets.csv" > "$roster"
-                sessions=5
-                ok "Copied $count students from the template roster." >&2
+                ROSTER_SESSIONS=5
+                ok "Copied $count students from the template roster."
                 break ;;
             b)
                 local available=${#SAMPLE_NAMES[@]}
-                info "This agent can generate up to $available students." >&2
+                info "This agent can generate up to $available students."
 
                 while true; do
                     read -r -p "  How many to generate (1-$available): " count
@@ -300,15 +314,13 @@ build_roster() {
                         "${SAMPLE_EMAILS[$i]}" "${SAMPLE_NAMES[$i]}" >> "$roster"
                     i=$(( i + 1 ))
                 done
-                sessions=1
-                ok "Generated a fresh roster of $count students." >&2
+                ROSTER_SESSIONS=1
+                ok "Generated a fresh roster of $count students."
                 break ;;
             *)
                 err "Please answer A or B." ;;
         esac
     done
-
-    printf '%s\n' "$sessions"
 }
 
 # Rewrite a single "key": number line in place, leaving the rest of the JSON
@@ -372,8 +384,8 @@ deploy_project() {
 
     preflight_checks || return 1
 
-    local project
-    project="$(read_project_name)" || return 1
+    read_project_name || return 1
+    local project="$PROJECT_NAME"
 
     if [ -d "$project" ]; then
         echo
@@ -406,12 +418,11 @@ deploy_project() {
     ok "Deployed attendance_checker.py and Helpers/config.json"
 
     # The roster is the one file the operator gets to shape.
-    local total_sessions
-    total_sessions="$(build_roster "$project/Helpers/assets.csv")" || return 1
+    build_roster "$project/Helpers/assets.csv" || return 1
 
     # Keep the config honest about how many sessions the roster has seen.
-    patch_json_number total_sessions "$total_sessions" "$project/Helpers/config.json"
-    ok "Set total_sessions=$total_sessions to match the roster."
+    patch_json_number total_sessions "$ROSTER_SESSIONS" "$project/Helpers/config.json"
+    ok "Set total_sessions=$ROSTER_SESSIONS to match the roster."
 
     # --- Permissions -----------------------------------------------
     echo
@@ -473,9 +484,8 @@ run_project() {
 }
 
 run_feature() {
-    local project
-    project="$(read_existing_project)" || return 1
-    run_project "$project"
+    read_existing_project || return 1
+    run_project "$PROJECT_NAME"
 }
 
 # ------------------------------------------------------------------
@@ -503,8 +513,8 @@ archive_one_log() {
 archive_logs() {
     banner "FEATURE 3 - Archive the log files"
 
-    local project
-    project="$(read_existing_project)" || return 1
+    read_existing_project || return 1
+    local project="$PROJECT_NAME"
 
     # One timestamp for the whole run, so both logs from the same session carry
     # the same name and can be read as a pair later.
