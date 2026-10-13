@@ -1,0 +1,6 @@
+# Deployed projects and their interrupt archives are build output, not source.
+attendance_tracker_*/
+attendance_tracker_*_archive.zip
+
+# macOS
+.DS_Store
