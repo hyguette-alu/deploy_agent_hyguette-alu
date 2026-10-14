@@ -287,5 +287,5 @@ Each of these was run against a real deployment:
 | Menu loop | Invalid choice re-prompts; option 4 exits cleanly |
 
 ## Video
-
-_To be added._
+Here is the link to my demo
+(https://youtu.be/k3Ose79uC5w)
