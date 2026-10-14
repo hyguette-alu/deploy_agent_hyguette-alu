@@ -262,30 +262,6 @@ attendance_tracker_demo/reports/
 
 Interrupt at a later prompt and the archive contains correspondingly more.
 
-## How the deployed application was tested
-
-Each of these was run against a real deployment:
-
-| Test | Result |
-| --- | --- |
-| Deploy with Option A, 3 students, thresholds 80/40 | Structure created; verification run started and marked all 3 |
-| Thresholds actually take effect | A student on 20% was flagged `URGENT` (below 40), one on 60% `WARNING` (below 80) — the retuned values, not the defaults |
-| `config.json` not reformatted | `diff` against the template showed only the two numbers changed |
-| Permissions | `-rwxr-xr-x` on the app, `-rw-------` on the config |
-| Roster write-back | Counts incremented correctly after marking (`4,0` → `5,0` for a present student, `1,3` → `1,4` for an absent one) |
-| Deploy with Option B, 2 students | Fresh roster at `0,0`, `total_sessions=1`, app reported `total_sessions=1` and both students at 100% |
-| Invalid input | Non-A/B roster choice and a student count of `0` were both rejected and re-prompted |
-| Archive, both logs present | Two timestamped files under `archives/attendance/` and `archives/absent/` |
-| Archive, `absent.log` absent | Archived the one existing log, reported the missing one, exited 0 |
-| Archive run twice | Two distinct timestamped files, nothing overwritten |
-| Existing project directory | Declining the overwrite aborted with an error and left the roster untouched |
-| Read-only working directory | Pre-flight refused with "No write permission in ..." and created nothing |
-| Write denied mid-deploy | Named the failing step, showed the command's own reason, removed the partial directory, aborted |
-| Run / archive on a missing project | Clear "No such project" error, no crash |
-| Ctrl+C mid-deploy | Exit 130, zip written, partial directory removed |
-| Ctrl+Z mid-deploy | Exit 148, zip written, partial directory removed |
-| Menu loop | Invalid choice re-prompts; option 4 exits cleanly |
-
 ## Video
 Here is the link to my demo
 (https://youtu.be/k3Ose79uC5w)
