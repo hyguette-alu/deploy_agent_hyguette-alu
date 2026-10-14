@@ -1,17 +1,9 @@
 #!/bin/bash
-#
-# deploy_agent.sh - Infrastructure-as-Code agent for the Student Attendance
-# Tracker.
-#
 # Three features, picked from an interactive menu (or passed as an argument):
 #   1. deploy  - build attendance_tracker_{name}/, populate it, secure it,
 #                optionally retune the alert thresholds, then verify by running
 #   2. run     - execute the app inside an already deployed project
 #   3. archive - copy reports/*.log into timestamped files under archives/
-#
-# While feature 1 is building a project, SIGINT (Ctrl+C) and SIGTSTP (Ctrl+Z)
-# are trapped: the half-built project is zipped and removed instead of being
-# left behind.
 #
 # Usage:  ./deploy_agent.sh            # interactive menu
 #         ./deploy_agent.sh deploy     # jump straight to one feature
@@ -24,9 +16,6 @@ set -u
 # Configuration
 # ------------------------------------------------------------------
 
-# Resolve the directory holding this script so templates/ is found no matter
-# where the user invokes the agent from. Deployed projects are created here
-# too, which keeps the interrupt .zip next to the project it came from.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE_DIR="$SCRIPT_DIR/templates"
 cd "$SCRIPT_DIR" || exit 1
@@ -34,8 +23,7 @@ cd "$SCRIPT_DIR" || exit 1
 DEFAULT_WARNING=75
 DEFAULT_FAILURE=50
 
-# Sample roster used by Option B. Index i of one array pairs with index i of
-# the other, so the two must stay the same length.
+# Sample roster 
 SAMPLE_NAMES=(
     "Aline Uwase"      "Brian Okoth"     "Chantal Mukamana" "David Adeyemi"
     "Esther Wanjiru"   "Felix Nsengiyumva" "Grace Achieng"  "Hamza Toure"
@@ -50,17 +38,12 @@ SAMPLE_EMAILS=(
     "k.ingabire@alustudent.com" "l.banda@alustudent.com"
 )
 
-# Set while a deployment is in flight so the signal handler knows what to zip.
-# Empty means "nothing half-built right now".
 PROJECT_IN_PROGRESS=""
-
-# Filled in by the interactive prompts. See read_project_name for why these
-# are globals rather than values echoed back through command substitution.
 PROJECT_NAME=""
 ROSTER_SESSIONS=""
 
 # ------------------------------------------------------------------
-# Small output helpers - one place to change the look of every message
+#                   Small output helpers 
 # ------------------------------------------------------------------
 
 info() { printf '  %s\n' "$*"; }
@@ -101,10 +84,6 @@ confirm() {
     esac
 }
 
-# Run one filesystem step of the deployment and explain it if it fails.
-# mkdir, cp and chmod all print their own reason on stderr (most often
-# "Permission denied"); this adds which step was being attempted, so a denied
-# write is reported clearly instead of silently producing a broken project.
 step() {
     local what="$1"
     shift
@@ -117,8 +96,6 @@ step() {
     return 1
 }
 
-# Roll back a deployment that failed partway through. Same rule as the
-# interrupt handler: never leave a half-made project behind.
 abort_partial_deploy() {
     local project="$1"
     if [ -d "$project" ]; then
@@ -132,13 +109,6 @@ abort_partial_deploy() {
     err "Deployment aborted. Nothing was left half-built."
 }
 
-# ------------------------------------------------------------------
-# Signal handling (active only while a project is being built)
-# ------------------------------------------------------------------
-
-# Ctrl+C / Ctrl+Z during deployment. The rule is: never leave a half-made
-# project on disk, but never throw the operator's work away either. So the
-# partial directory is zipped first, then removed.
 on_interrupt() {
     local signal="$1"
     local exit_code=130
@@ -155,8 +125,6 @@ on_interrupt() {
         local zip_name="${PROJECT_IN_PROGRESS}_archive.zip"
         info "Archiving whatever was built so far..."
 
-        # zip adds to an existing archive rather than replacing it, which
-        # would mix two different interrupted attempts into one file.
         rm -f "$zip_name"
 
         if zip -r -q "$zip_name" "$PROJECT_IN_PROGRESS"; then
@@ -181,26 +149,10 @@ arm_interrupt_trap() {
     trap 'on_interrupt SIGTSTP' TSTP
 }
 
-# Hand the signals back to the default handlers. This matters before the
-# verification run: Ctrl+C there belongs to the Python marking session, not
-# to this script.
 disarm_interrupt_trap() {
     trap - INT TSTP
     PROJECT_IN_PROGRESS=""
 }
-
-# ------------------------------------------------------------------
-# Shared prompts
-# ------------------------------------------------------------------
-
-# Read a project suffix and store the full directory name in PROJECT_NAME.
-#
-# These prompts deliberately set a global instead of echoing a value for the
-# caller to capture with $(...). Command substitution runs in a subshell, and
-# bash defers the parent's traps until a subshell finishes - so a Ctrl+C
-# arriving while the operator sits at one of these prompts would be swallowed
-# instead of triggering the archive. Keeping the reads in the main shell keeps
-# the interrupt handler responsive at every prompt of the deployment.
 read_project_name() {
     local input
     PROJECT_NAME=""
@@ -209,8 +161,6 @@ read_project_name() {
         if [ -z "$input" ]; then
             err "The name cannot be empty." ; continue
         fi
-        # Anything outside this set would either break the path or make the
-        # directory awkward to work with from the shell.
         case "$input" in
             *[!A-Za-z0-9_-]*)
                 err "Use letters, digits, hyphens or underscores only."
@@ -221,8 +171,6 @@ read_project_name() {
     PROJECT_NAME="attendance_tracker_$input"
 }
 
-# Ask for an existing deployment (features 2 and 3) and validate it.
-# Also leaves the answer in PROJECT_NAME.
 read_existing_project() {
     read_project_name || return 1
 
@@ -236,9 +184,6 @@ read_existing_project() {
 # ------------------------------------------------------------------
 # Feature 1 - Deploy
 # ------------------------------------------------------------------
-
-# Every external command the agent depends on. Checking up front means a
-# missing tool is reported before any directory is created, not halfway in.
 preflight_checks() {
     banner "Pre-flight checks"
     local missing=0
@@ -258,9 +203,6 @@ preflight_checks() {
         missing=1
     fi
 
-    # Templates are part of the repo; without them there is nothing to deploy.
-    # Readability is checked too, not just existence - a template the agent
-    # cannot read is as fatal as one that is absent.
     local template
     for template in attendance_checker.py assets.csv config.json; do
         if [ ! -f "$TEMPLATE_DIR/$template" ]; then
@@ -273,9 +215,6 @@ preflight_checks() {
             ok "template found - templates/$template"
         fi
     done
-
-    # Projects are created here, so a read-only working directory would fail
-    # every mkdir that follows. Better to say so now than halfway through.
     if [ -w "$SCRIPT_DIR" ]; then
         ok "write permission confirmed - $SCRIPT_DIR"
     else
@@ -290,14 +229,6 @@ preflight_checks() {
     ok "All pre-flight checks passed."
 }
 
-# Build Helpers/assets.csv and store the matching total_sessions in
-# ROSTER_SESSIONS.
-#
-# The two options differ in what the roster already contains, and
-# total_sessions has to agree with it: the app expects every student to have
-# total_sessions - 1 prior sessions on record.
-#   Option A - template rows carry 4 prior sessions -> total_sessions 5
-#   Option B - fresh rows start at 0/0, so today is session one -> 1
 build_roster() {
     local roster="$1"
     local choice count
@@ -306,8 +237,7 @@ build_roster() {
 
     echo
     info "How should the class roster be built?"
-    info "  A) Copy students from templates/assets.csv (they keep their"
-    info "     existing attendance history - 4 prior sessions each)"
+    info "  A) Copy students from templates/assets.csv"
     info "  B) Generate a fresh roster (all counts start at 0)"
 
     while true; do
@@ -315,8 +245,6 @@ build_roster() {
         case "$(printf '%s' "$choice" | tr '[:upper:]' '[:lower:]')" in
             a)
                 local available
-                # Count data rows, ignoring the header and any blank lines, so
-                # the agent never asks for more students than exist.
                 available=$(( $(grep -c '[^[:space:]]' "$TEMPLATE_DIR/assets.csv") - 1 ))
                 info "The template has $available students."
 
@@ -331,8 +259,6 @@ build_roster() {
                     fi
                 done
 
-                # head -n count+1 keeps the header row plus `count` students.
-                # A failed redirection here means the roster is unwritable.
                 if ! head -n "$(( count + 1 ))" "$TEMPLATE_DIR/assets.csv" > "$roster"; then
                     err "Could not write the roster to $roster."
                     return 1
@@ -375,18 +301,12 @@ build_roster() {
     done
 }
 
-# Rewrite a single "key": number line in place, leaving the rest of the JSON
-# byte-for-byte untouched - no reformatting, no reordering.
-#
-# -i.bak is the portable form: GNU sed accepts a zero-length suffix, BSD/macOS
-# sed does not, so a suffix is written and then deleted.
 patch_json_number() {
     local key="$1" value="$2" file="$3"
     sed -i.bak "s/\(\"$key\"[[:space:]]*:[[:space:]]*\)[0-9][0-9]*/\1$value/" "$file"
     rm -f "$file.bak"
 }
 
-# Optional retune of the alert thresholds in the deployed config.json.
 update_thresholds() {
     local config="$1"
     local warning failure
@@ -413,8 +333,7 @@ update_thresholds() {
         if ! is_percent "$failure"; then
             err "Enter a whole number between 0 and 100."
         elif [ "$failure" -ge "$warning" ]; then
-            # Failure must be the stricter of the two, otherwise the app's
-            # WARNING band would be empty and no student could ever land in it.
+
             err "Failure ($failure) must be below warning ($warning)."
         else
             break
@@ -423,8 +342,6 @@ update_thresholds() {
 
     patch_json_number warning "$warning" "$config"
     patch_json_number failure "$failure" "$config"
-
-    # sed wrote the file through a temporary copy, so re-assert the lockdown.
     chmod 600 "$config"
 
     ok "Thresholds updated:"
@@ -450,8 +367,6 @@ deploy_project() {
         info "Removed the previous $project/."
     fi
 
-    # From here until the project is complete, Ctrl+C / Ctrl+Z must archive
-    # rather than abandon. Record the name first so the handler can find it.
     PROJECT_IN_PROGRESS="$project"
     arm_interrupt_trap
 
@@ -459,14 +374,11 @@ deploy_project() {
     info "Building $project/ ..."
     info "(Ctrl+C or Ctrl+Z from here on will archive the partial project.)"
 
-    # Structure the Python app expects: the script at the project root, its
-    # inputs under Helpers/, and an empty reports/ it will fill on first run.
     step "create the project directories" \
         mkdir -p "$project/Helpers" "$project/reports" \
         || { abort_partial_deploy "$project"; return 1; }
     ok "Created $project/, $project/Helpers/, $project/reports/"
 
-    # attendance_checker.py and config.json always deploy unmodified.
     step "copy attendance_checker.py into $project/" \
         cp "$TEMPLATE_DIR/attendance_checker.py" "$project/attendance_checker.py" \
         || { abort_partial_deploy "$project"; return 1; }
@@ -475,31 +387,25 @@ deploy_project() {
         || { abort_partial_deploy "$project"; return 1; }
     ok "Deployed attendance_checker.py and Helpers/config.json"
 
-    # The roster is the one file the operator gets to shape.
     build_roster "$project/Helpers/assets.csv" \
         || { abort_partial_deploy "$project"; return 1; }
 
-    # Keep the config honest about how many sessions the roster has seen.
     patch_json_number total_sessions "$ROSTER_SESSIONS" "$project/Helpers/config.json"
     ok "Set total_sessions=$ROSTER_SESSIONS to match the roster."
 
     # --- Permissions -----------------------------------------------
     echo
     info "Applying permissions..."
-    # The app is launched directly, so it needs the execute bit.
     step "make attendance_checker.py executable" \
         chmod +x "$project/attendance_checker.py" \
         || { abort_partial_deploy "$project"; return 1; }
-    # config.json holds the pass/fail thresholds. Owner read/write only keeps
-    # other accounts on this machine from reading or editing grading rules.
-    # A config left world-readable is a security failure, so this aborts too.
+
     step "restrict Helpers/config.json to owner read/write" \
         chmod 600 "$project/Helpers/config.json" \
         || { abort_partial_deploy "$project"; return 1; }
     ok "chmod +x  attendance_checker.py   -> $(ls -l "$project/attendance_checker.py" | cut -d' ' -f1)"
     ok "chmod 600 Helpers/config.json     -> $(ls -l "$project/Helpers/config.json" | cut -d' ' -f1)"
 
-    # --- Thresholds ------------------------------------------------
     update_thresholds "$project/Helpers/config.json"
 
     echo
@@ -508,8 +414,6 @@ deploy_project() {
 
     ok "Deployment of $project/ is complete."
 
-    # The project is whole, so there is no longer a partial build to rescue.
-    # Disarm before running: Ctrl+C now belongs to the marking session.
     disarm_interrupt_trap
 
     # --- Verification ----------------------------------------------
@@ -523,8 +427,6 @@ deploy_project() {
 # Feature 2 - Run
 # ------------------------------------------------------------------
 
-# Launch the app from inside the project. The cd happens in a subshell so the
-# agent itself stays put in SCRIPT_DIR afterwards.
 run_project() {
     local project="$1"
 
@@ -556,8 +458,6 @@ run_feature() {
 # Feature 3 - Archive the logs
 # ------------------------------------------------------------------
 
-# Copy one log into its own archive directory under a timestamped name.
-# Returns 0 if it archived something, 1 if the log did not exist.
 archive_one_log() {
     local project="$1" name="$2" stamp="$3"
     local source="$project/reports/$name.log"
@@ -580,8 +480,6 @@ archive_logs() {
     read_existing_project || return 1
     local project="$PROJECT_NAME"
 
-    # One timestamp for the whole run, so both logs from the same session carry
-    # the same name and can be read as a pair later.
     local stamp
     stamp="$(date +%Y%m%d_%H%M%S)"
     info "Archiving logs from $project/reports/ (timestamp $stamp)"
@@ -589,8 +487,6 @@ archive_logs() {
 
     local archived=0
 
-    # A missing log is normal, not an error: attendance_checker.py only writes
-    # absent.log when at least one student was marked absent.
     archive_one_log "$project" "attendance" "$stamp" \
         && archived=$(( archived + 1 )) \
         || warn "No reports/attendance.log yet - run the app first (feature 2)."
@@ -619,9 +515,9 @@ show_menu() {
     echo "=============================================================="
     echo " Attendance Tracker - Deployment Agent"
     echo "=============================================================="
-    echo "  1) Deploy the application  (build, secure and verify a project)"
-    echo "  2) Run the application     (mark a session in a deployed project)"
-    echo "  3) Archive the log files   (timestamped copies under archives/)"
+    echo "  1) Deploy the application"
+    echo "  2) Run the application"
+    echo "  3) Archive the log files"
     echo "  4) Exit"
     echo "--------------------------------------------------------------"
 }
